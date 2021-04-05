@@ -44,7 +44,6 @@ class Arena(MujocoXML):
         """
         # Determine if camera already exists
         camera = find_elements(root=self.worldbody, tags="camera", attribs={"name": camera_name}, return_first=True)
-
         # Compose attributes
         if camera_attribs is None:
             camera_attribs = {}
