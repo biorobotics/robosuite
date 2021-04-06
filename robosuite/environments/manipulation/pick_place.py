@@ -11,12 +11,14 @@ from robosuite.models.objects import (
     BreadObject,
     CerealObject,
     CanObject,
+    iPhoneObject,
 )
 from robosuite.models.objects import (
     MilkVisualObject,
     BreadVisualObject,
     CerealVisualObject,
     CanVisualObject,
+    iPhoneVisualObject,
 )
 from robosuite.models.tasks import ManipulationTask
 from robosuite.utils.placement_samplers import SequentialCompositeSampler, UniformRandomSampler
@@ -183,9 +185,9 @@ class PickPlace(SingleArmEnv):
     ):
         # task settings
         self.single_object_mode = single_object_mode
-        self.object_to_id = {"milk": 0, "bread": 1, "cereal": 2, "can": 3}
+        self.object_to_id = {"milk": 0, "bread": 1, "cereal": 2, "can": 3, "iPhone":4}
         self.object_id_to_sensors = {}                    # Maps object id to sensor names for that object
-        self.obj_names = ["Milk", "Bread", "Cereal", "Can"]
+        self.obj_names = ["Milk", "Bread", "Cereal", "Can", "iPhone"]
         if object_type is not None:
             assert (
                     object_type in self.object_to_id.keys()
@@ -477,7 +479,7 @@ class PickPlace(SingleArmEnv):
         self.objects = []
         self.visual_objects = []
         for vis_obj_cls, obj_name in zip(
-                (MilkVisualObject, BreadVisualObject, CerealVisualObject, CanVisualObject),
+                (MilkVisualObject, BreadVisualObject, CerealVisualObject, CanVisualObject, iPhoneVisualObject),
                 self.obj_names,
         ):
             vis_name = "Visual" + obj_name
@@ -485,7 +487,7 @@ class PickPlace(SingleArmEnv):
             self.visual_objects.append(vis_obj)
 
         for obj_cls, obj_name in zip(
-                (MilkObject, BreadObject, CerealObject, CanObject),
+                (MilkObject, BreadObject, CerealObject, CanObject, iPhoneObject),
                 self.obj_names,
         ):
             obj = obj_cls(name=obj_name)
@@ -802,3 +804,16 @@ class PickPlaceCan(PickPlace):
                 "single_object_mode" not in kwargs and "object_type" not in kwargs
         ), "invalid set of arguments"
         super().__init__(single_object_mode=2, object_type="can", **kwargs)
+
+
+class PickPlaceiPhone(PickPlace):
+    """
+    Easier version of task - place one can into its bin.
+    """
+
+    def __init__(self, **kwargs):
+        assert (
+                "single_object_mode" not in kwargs and "object_type" not in kwargs
+        ), "invalid set of arguments"
+        super().__init__(single_object_mode=2, object_type="iPhone", **kwargs)
+

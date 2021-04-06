@@ -5,13 +5,13 @@ import matplotlib.pyplot as plt
 is_render = True
 # create environment instance
 env = suite.make(
-    env_name="PickPlaceSingle", # try with other tasks like "Stack" and "Door"
-    robots="Panda",  # try with other robots like "Sawyer" and "Jaco"
+    env_name="PickPlaceiPhone", # try with other tasks like "Stack" and "Door"
+    robots="UR5e",  # try with other robots like "Sawyer" and "Jaco"
     has_renderer=is_render,
     has_offscreen_renderer=not is_render,
     use_camera_obs=not is_render,
-    render_camera='birdview',
-    camera_names = 'birdview'              # visualize the "frontview" camera
+    render_camera='frontview',
+    camera_names = 'frontview',              # visualize the "frontview" camera
 )
 
 # reset the environment
