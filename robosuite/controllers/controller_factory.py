@@ -146,7 +146,7 @@ def controller_factory(name, params):
                                            interpolator_ori=ori_interpolator,
                                            bullet_server_id=pybullet_server.server_id,
                                            **params)
-
+        
     if name == "JOINT_VELOCITY":
         return JointVelocityController(interpolator=interpolator, **params)
 
@@ -155,5 +155,8 @@ def controller_factory(name, params):
 
     if name == "JOINT_TORQUE":
         return JointTorqueController(interpolator=interpolator, **params)
+
+    if name == "WOMBAT_IK":
+        return InverseKinematicsController(interpolator=interpolator, **params)
 
     raise ValueError("Unknown controller name: {}".format(name))

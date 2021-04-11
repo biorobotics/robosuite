@@ -12,6 +12,7 @@ CONTROLLER_INFO = {
     "OSC_POSITION": "Operational Space Control (Position Only)",
     "OSC_POSE":     "Operational Space Control (Position + Orientation)",
     "IK_POSE":      "Inverse Kinematics Control (Position + Orientation) (Note: must have PyBullet installed)",
+    "WOMBAT_IK":  "Inverse Kinematics Control (Position + Orientation) in mujoco frame Only"
 }
 
 ALL_CONTROLLERS = CONTROLLER_INFO.keys()
