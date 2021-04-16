@@ -5,11 +5,16 @@ import transforms3d as t3d
 from collections import OrderedDict
 import ipdb
 import cv2
+import h5py
 from robosuite import load_controller_config
 import json
 import argparse
 from model import QNetwork
 from model import QT_Opt
+from model import FeatureExtractor
+from pympler import muppy, summary
+
+import os
 
 import torch
 
@@ -60,13 +65,46 @@ class PickPlace_env(object):
 			render_camera= self.args.render_camera,
 			camera_names =  self.args.offscreen_camera,  					# visualize the "frontview" camera
 		)
-		self.device = torch.device('cpu', 0)
+		self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 		self.ex_replay = OrderedDict()
 		self.replay_buffer = ReplayBuffer(1e5)
+		self.load_initial_replay()
+		# ipdb.set_trace()
+		self.fe = FeatureExtractor()
+		self.target_fe1 = FeatureExtractor()
+		self.target_fe2 = FeatureExtractor()
+
+
 		self.qnet = QNetwork().to(self.device) # gpu
 		self.target_qnet1 = QNetwork().to(self.device)
 		self.target_qnet2 = QNetwork().to(self.device)
 		self.qt_opt = QT_Opt(self.replay_buffer,self.qnet, self.target_qnet1, self.target_qnet2)
+
+		self.save_folder = "./video_folder/"
+		if os.path.exists(self.save_folder):
+			print("Path exists !!")
+		else:
+			os.mkdir(self.save_folder)
+
+
+	def load_initial_replay(self):
+
+		for i in range(1,5):
+			with h5py.File('../data_collection/data/experience_replay_{}.h5'.format(i), 'r') as f:
+				print("Reading from from {}".format(f))
+				replay_keys = list(f.keys())
+				for j in range(f[replay_keys[0]].shape[0]):
+					self.replay_buffer.push(f[replay_keys[6]][j], 
+											f[replay_keys[0]][j], 
+											f[replay_keys[5]][j], 
+											f[replay_keys[4]][j], 
+											f[replay_keys[2]][j],
+											f[replay_keys[3]][j],
+											f[replay_keys[1]][j],)
+
+
+
+		pass
 
 
 	def create_experience_replay(self,state,action,reward,next_state):
@@ -103,13 +141,20 @@ class PickPlace_env(object):
 
 	# print("reward: ",obs['iPhone_pos'][2])
 	#iPhone_z = 0.82
-		if obs['iPhone_pos'][2] > 0.82+0.05:
+		if obs['iPhone_pos'][2] > 0.825+0.05:
 			reward = 1
 		else:
 			reward = 0
 
 		return reward
 		pass
+
+	def robot_done(self,obs):
+
+		if obs['robot0_eef_pos']<0.8:
+			return True
+		else:
+			return False
 
 	def calculate_ee_ori(self,obs):
 
@@ -132,9 +177,35 @@ class PickPlace_env(object):
 
 	def preprocess_image(self,image):
 
-		image = image[::-1,0:125]
-		image = cv2.resize(image,(256,256))
-		return image
+		image_ = image[::-1,0:125].astype('uint8')
+		image_ = cv2.resize(image_,(256,256))
+		# plt.imshow(image_)
+		# plt.show()
+		return image_,image[::-1,:]
+
+	def bound_action(self,action):
+
+		if action[0] > 2:
+			action[0] = 2.
+		elif action[0] < -2:
+			action[0] = -2
+
+		if action[1] > 2:
+			action[1] = 2.
+		elif action[1] < -2:
+			action[1] = -2
+
+		if action[2] > 2:
+			action[2] = 2.
+		elif action[2] < -2:
+			action[2] = -2
+
+		if action[6]<=0:
+			action[6] = 0
+		elif action[6]>0:
+			action[6] = 1
+
+		return action
 
 	def run(self):
 
@@ -146,7 +217,8 @@ class PickPlace_env(object):
 			done = False
 
 			if not self.args.is_render:
-				image_current = self.preprocess_image(obs['image-state'])
+				image_current,_ = self.preprocess_image(obs['image-state'])
+				# ipdb.set_trace()
 			else:
 				image_current = np.zeros([256,256])
 
@@ -154,6 +226,7 @@ class PickPlace_env(object):
 
 			for s in range(max_steps):
 
+				self.episode_reward = 0
 				if not done:
 					# ipdb.set_trace()
 					obs_current = self.robot_obs2obs(obs)
@@ -161,45 +234,60 @@ class PickPlace_env(object):
 					image_current_ = torch.FloatTensor(image_current).to(self.device)
 					action_ = torch.FloatTensor(action).to(self.device)
 
-					_, feature_vector_next = self.qnet(obs_.unsqueeze(0), action_.unsqueeze(0), image_current_.unsqueeze(0))
-					feature_vector_next = feature_vector_next.view(feature_vector_next.size(0),-1)
-					obs_image_ = torch.cat((obs_.unsqueeze(0),feature_vector_next),dim=1)
+					_, feature_vector_current = self.qnet(obs_.unsqueeze(0), action_.unsqueeze(0), image_current_.unsqueeze(0))
+					feature_vector_current = feature_vector_current.view(feature_vector_current.size(0),-1)
+					obs_image_ = torch.cat((obs_.unsqueeze(0),feature_vector_current),dim=1)
 
 					action = self.qt_opt.cem_optimal_action(obs_,obs_image_,image_current_)
+					action = self.bound_action(action)
+					# print("Action: ",action)
 					# print("action 1: ",action)
 					# action = self.select_action(obs)
 					# print("action 2: ",action)
 					robot_cmd = self.action2robot_cmd(action,obs)
+					# print("position of iPhone: ",obs['iPhone_pos'])
 
 					if self.args.is_render:
 						self.env.render()  # render on display
-						image = np.zeros([256,256])
+						image_current = np.zeros([256,256])
 					else:
-						image_current = self.preprocess_image(obs['image-state'])
+						image_current,_ = self.preprocess_image(obs['image-state'])
 
-					print("Taking the step {}".format(s))
+					# print("Taking the step {}".format(s))
 					obs, reward, done, info = self.env.step(robot_cmd)
 					reward = self.robot_reward(obs)
+					done  = self.robot_done(obs)
 					# print("Reward: ",reward)
 					if self.args.is_render:
 						self.env.render()  # render on display
-						image = np.zeros([256,256])
+						image_next = np.zeros([256,256])
 					else:
-						image_next = self.preprocess_image(obs['image-state'])
+						image_next,image_org = self.preprocess_image(obs['image-state'])
+						if not i%10:
+							# print("Saving image")
+							plt.imsave(self.save_folder+"{}_{}.jpg".format(i,s),image_org)
 
 					obs_next = self.robot_obs2obs(obs)
 					# reward = reward(obs)
 					self.replay_buffer.push(obs_current, action, reward, obs_next, image_current, image_next, done)
+					self.episode_reward += reward
+
+			if self.episode_reward>0:
+				print("This pick was a success")
+			else:
+				print("Did not pick")
 
 					# print("Len of replay buffer: ",len(self.replay_buffer))
 
 
 			if len(self.replay_buffer) > self.args.batch_size:
-				self.qt_opt.update(self.args.batch_size)
-			# 	qt_opt.save_model(model_path)
+				self.qt_opt.update(self.args.batch_size,i)
+				self.qt_opt.save_model(self.args.model_path)
 
+		all_objects = muppy.get_objects()
+		sum1 = summary.summarize(all_objects)
 
-
+		summary.print_(sum1)
 
 
 
@@ -207,7 +295,7 @@ if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser(description='QT-Opt training Parameters')
 	parser.add_argument('--normalizer', type=bool, default=True, help='use normalizer')
-	# parser.add_argument('--log', type=str, default='exp14', help='Log folder to store videos')
+	parser.add_argument('--model_path', type=str, default='./models/exp_1.pth', help='folder to store weights')
 	parser.add_argument('--policy_idx', type=int, default=20, help='Index of model to test the environment')
 	parser.add_argument('--env', type=str, default='PickPlaceiPhone', help='name of environment')
 	parser.add_argument('--robot', type=str, default='UR5e', help='name of robot')
@@ -215,8 +303,8 @@ if __name__ == "__main__":
 	parser.add_argument('--is_render', type=bool, default=False, help='rendering yes/no')
 	parser.add_argument('--render_camera', type=str, default='frontview', help='camera used for online rendering')
 	parser.add_argument('--offscreen_camera', type=str, default='agentview', help='rcamera used for offline rendering')
-	parser.add_argument('--max_episodes', type=int, default=10, help='max episodes for which env runs')
-	parser.add_argument('--batch_size', type=int, default=100, help='episodes after which q values are updated')
+	parser.add_argument('--max_episodes', type=int, default=100, help='max episodes for which env runs')
+	parser.add_argument('--batch_size', type=int, default=50, help='episodes after which q values are updated')
 
 
 	args = parser.parse_args()

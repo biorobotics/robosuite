@@ -76,19 +76,11 @@ class CEM():
 		return self.mean, self.std
 
 
-
-class QNetwork(nn.Module):
+class FeatureExtractor(nn.Module):
 	def __init__(self):
-		super(QNetwork, self).__init__()
+		super(FeatureExtractor, self).__init__()
 
 		self.image_channels = 3
-
-		self.action_state_network = nn.Sequential(
-										nn.Linear(9,256),
-										nn.ReLU(),
-										nn.Linear(256,64),
-										nn.ReLU(),
-										)
 
 		self.image_network = nn.Sequential(
 								nn.Conv2d(self.image_channels,8, kernel_size=2, stride=2),
@@ -108,6 +100,30 @@ class QNetwork(nn.Module):
 								nn.Conv2d(64, 64, kernel_size=2, stride=2),
 								nn.ReLU())
 
+	def forward(self,image):
+		image = image.permute(0,3,1,2)
+		x = self.image_network(image)
+		return x
+
+
+
+
+
+class QNetwork(nn.Module):
+	def __init__(self):
+		super(QNetwork, self).__init__()
+
+		self.image_channels = 3
+
+		self.action_state_network = nn.Sequential(
+										nn.Linear(9,256),
+										nn.ReLU(),
+										nn.Linear(256,64),
+										nn.ReLU(),
+										)
+
+		self.image_network = FeatureExtractor()
+
 		self.combined_network = nn.Sequential(
 								nn.Linear(128,32),
 								nn.ReLU(),
@@ -116,8 +132,10 @@ class QNetwork(nn.Module):
 								nn.Linear(8,1),
 								nn.Sigmoid())
 
+
+
 	def forward(self,state,action,image):
-		image = image.permute(0,3,1,2)
+
 		x1 = self.action_state_network(torch.cat((state,action),dim=1))
 		batch_size,layer_size = x1.shape
 		x1 = x1.reshape(batch_size,layer_size,1,1)
@@ -137,7 +155,7 @@ class QT_Opt():
 		
 		self.state_dim = 66
 		self.action_dim = 7
-		self.device = torch.device('cpu', 0)
+		self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 		self.num_samples = num_samples
 		self.select_num = select_num
 		self.cem_update_itr = cem_update_itr
@@ -151,8 +169,9 @@ class QT_Opt():
 
 		self.q_optimizer = optim.Adam(self.qnet.parameters(), lr=q_lr)
 		self.step_cnt = 0
+		self.writer = SummaryWriter()
 
-	def update(self, batch_size, gamma=0.9, soft_tau=1e-2, update_delay=100):
+	def update(self, batch_size, epoch, gamma=0.9, soft_tau=1e-2, update_delay=100):
 		state, action, reward, next_state, image_current, image_next, done = self.replay_buffer.sample(batch_size)
 		self.step_cnt+=1
 
@@ -179,9 +198,10 @@ class QT_Opt():
 		new_next_action=torch.FloatTensor(new_next_action).to(self.device)
 
 		target_q_min = torch.min(self.target_qnet1(next_state_, new_next_action, image_next)[0], self.target_qnet2(next_state_, new_next_action, image_next)[0])
-		target_q = reward + (1-done)*gamma*target_q_min
+		target_q = reward + (1-done)*gamma*target_q_min	#NOT SURE
 
 		q_loss = ((predict_q - target_q.detach())**2).mean()  # MSE loss, note that original paper uses cross-entropy loss
+		self.writer.add_scalar("Loss/train", q_loss, epoch)
 		print('Q Loss: ',q_loss)
 		self.q_optimizer.zero_grad()
 		q_loss.backward()
@@ -200,7 +220,7 @@ class QT_Opt():
 		return the only one largest, very gready
 		state_image: gripper_states+image_feature vector
 		'''
-		numpy_state = state_image.detach().numpy()
+		numpy_state = state_image.cpu().detach().numpy()
 
 		''' the following line is critical:
 		every time use a new/initialized cem, and cem is only for deriving the argmax_a', 
