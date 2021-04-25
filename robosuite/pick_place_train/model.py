@@ -25,28 +25,12 @@ import ipdb
 from random import randint
 
 
-class ContinuousActionLinearPolicy(object):
-	def __init__(self, theta, state_dim, action_dim):
-		assert len(theta) == (state_dim + 1) * action_dim
-		self.W = theta[0 : state_dim * action_dim].reshape(state_dim, action_dim)
-		self.b = theta[state_dim * action_dim : None].reshape(1, action_dim)
-		self.state_dim = state_dim
-		self.action_dim = action_dim
-	def act(self, state):
-		# a = state.dot(self.W) + self.b
-		# ipdb.set_trace()
-		a = np.dot(state, self.W) + self.b
-		return a
-	def update(self, theta):
-		self.W = theta[0 : self.state_dim * self.action_dim].reshape(self.state_dim, self.action_dim)
-		self.b = theta[self.state_dim * self.action_dim : None].reshape(1, self.action_dim)
-
 
 class CEM():
 	''' cross-entropy method, as optimization of the action policy 
 	the policy weights theta are stored in this CEM class instead of in the policy
 	'''
-	def __init__(self, theta_dim, ini_mean_scale=0.0, ini_std_scale=1.0):
+	def __init__(self, theta_dim, ini_mean_scale=3, ini_std_scale=1.0):
 		self.theta_dim = theta_dim
 		self.initialize(ini_mean_scale=ini_mean_scale, ini_std_scale=ini_std_scale)
 
@@ -57,8 +41,10 @@ class CEM():
 		return theta
 
 	def initialize(self, ini_mean_scale=0.0, ini_std_scale=1.0):
-		self.mean = ini_mean_scale*np.ones(self.theta_dim)
-		self.std = ini_std_scale*np.ones(self.theta_dim)
+		# self.mean = ini_mean_scale*np.ones(self.theta_dim)
+		# self.std = ini_std_scale*np.ones(self.theta_dim)
+		self.mean = np.array([0,0,0,0,0])
+		self.std = np.array([6,6,3,3.14,1])
 
 	def sample_multi(self, n):
 		theta_list=[]
@@ -77,13 +63,15 @@ class CEM():
 
 
 class FeatureExtractor(nn.Module):
-	def __init__(self):
+	def __init__(self,image_channels):
 		super(FeatureExtractor, self).__init__()
 
-		self.image_channels = 3
+		self.image_channels = image_channels
 
 		self.image_network = nn.Sequential(
-								nn.Conv2d(self.image_channels,8, kernel_size=2, stride=2),
+								nn.Conv2d(self.image_channels,4, kernel_size=2, stride=2),
+								nn.ReLU(),
+								nn.Conv2d(4, 8, kernel_size=2, stride=2),
 								nn.ReLU(),
 								nn.Conv2d(8, 16, kernel_size=2, stride=2),
 								nn.ReLU(),
@@ -94,13 +82,10 @@ class FeatureExtractor(nn.Module):
 								nn.Conv2d(64, 64, kernel_size=2, stride=2),
 								nn.ReLU(),
 								nn.Conv2d(64, 64, kernel_size=2, stride=2),
-								nn.ReLU(),
-								nn.Conv2d(64, 64, kernel_size=2, stride=2),
-								nn.ReLU(),
-								nn.Conv2d(64, 64, kernel_size=2, stride=2),
 								nn.ReLU())
 
 	def forward(self,image):
+
 		image = image.permute(0,3,1,2)
 		x = self.image_network(image)
 		return x
@@ -113,16 +98,19 @@ class QNetwork(nn.Module):
 	def __init__(self):
 		super(QNetwork, self).__init__()
 
-		self.image_channels = 3
+		self.image_channels = 1
+
+		self.action_dim = 5
+		self.state_dim = 2
 
 		self.action_state_network = nn.Sequential(
-										nn.Linear(9,256),
+										nn.Linear(self.action_dim+self.state_dim,256),
 										nn.ReLU(),
 										nn.Linear(256,64),
 										nn.ReLU(),
 										)
 
-		self.image_network = FeatureExtractor()
+		self.image_network = FeatureExtractor(self.image_channels)
 
 		self.combined_network = nn.Sequential(
 								nn.Linear(128,32),
@@ -139,6 +127,7 @@ class QNetwork(nn.Module):
 		x1 = self.action_state_network(torch.cat((state,action),dim=1))
 		batch_size,layer_size = x1.shape
 		x1 = x1.reshape(batch_size,layer_size,1,1)
+		# ipdb.set_trace()
 		x2 = self.image_network(image)
 		x = torch.cat((x1,x2),dim=1)
 		x = x.view(x.size(0), -1)
@@ -151,10 +140,10 @@ class QNetwork(nn.Module):
 
 class QT_Opt():
 	def __init__(self, replay_buffer, qnet, target_qnet1, target_qnet2, 
-										hidden_dim=64, q_lr=3e-4, cem_update_itr=4, select_num=6, num_samples=16):
+										hidden_dim=64, q_lr=3e-3, cem_update_itr=4, select_num=6, num_samples=64):
 		
-		self.state_dim = 66
-		self.action_dim = 7
+		self.state_dim = 2
+		self.action_dim = 5
 		self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 		self.num_samples = num_samples
 		self.select_num = select_num
@@ -163,19 +152,17 @@ class QT_Opt():
 		self.qnet = qnet.to(self.device) # gpu
 		self.target_qnet1 = target_qnet1.to(self.device)
 		self.target_qnet2 = target_qnet2.to(self.device)
-		self.cem = CEM(theta_dim = (self.state_dim + 1) * self.action_dim)  # cross-entropy method for updating
+		self.cem = CEM(theta_dim = self.action_dim)  # cross-entropy method for updating
 		theta = self.cem.sample()
-		self.policy = ContinuousActionLinearPolicy(theta, self.state_dim, self.action_dim)
 
 		self.q_optimizer = optim.Adam(self.qnet.parameters(), lr=q_lr)
 		self.step_cnt = 0
 		self.writer = SummaryWriter()
 
-	def update(self, batch_size, epoch, gamma=0.9, soft_tau=1e-2, update_delay=100):
+	def update(self, batch_size, epoch, episode_reward, gamma=0.9, soft_tau=1e-2, update_delay=100):
 		state, action, reward, next_state, image_current, image_next, done = self.replay_buffer.sample(batch_size)
 		self.step_cnt+=1
 
-		
 		state_      = torch.FloatTensor(state).to(self.device)
 		next_state_ = torch.FloatTensor(next_state).to(self.device)
 		action     = torch.FloatTensor(action).to(self.device)
@@ -183,7 +170,7 @@ class QT_Opt():
 		image_next = torch.FloatTensor(image_next).to(self.device)
 		reward     = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
 		done       = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
-
+		#ipdb.set_trace()
 		predict_q, _ = self.qnet(state_, action, image_current) # predicted Q(s,a) value
 		_, feature_vector_next = self.qnet(next_state_, action, image_next) # get feature vector for next state
 		feature_vector_next = feature_vector_next.view(feature_vector_next.size(0),-1)
@@ -193,15 +180,17 @@ class QT_Opt():
 		# print(next_state_.shape)
 		new_next_action = []
 		for i in range(batch_size):      # batch of states, use them one by one
-			new_next_action.append(self.cem_optimal_action(next_state_[i],next_state_image[i], image_next[i]))
+			new_next_action.append(self.cem_optimal_action(next_state_[i],image_next[i]))
 
 		new_next_action=torch.FloatTensor(new_next_action).to(self.device)
 
 		target_q_min = torch.min(self.target_qnet1(next_state_, new_next_action, image_next)[0], self.target_qnet2(next_state_, new_next_action, image_next)[0])
 		target_q = reward + (1-done)*gamma*target_q_min	#NOT SURE
 
+		# print("predict_q: ",predict_q,target_q,state_,action)
 		q_loss = ((predict_q - target_q.detach())**2).mean()  # MSE loss, note that original paper uses cross-entropy loss
 		self.writer.add_scalar("Loss/train", q_loss, epoch)
+		self.writer.add_scalar("self.episode_reward/train", episode_reward, epoch)
 		print('Q Loss: ',q_loss)
 		self.q_optimizer.zero_grad()
 		q_loss.backward()
@@ -212,15 +201,17 @@ class QT_Opt():
 		self.target_qnet1=self.target_soft_update(self.qnet, self.target_qnet1, soft_tau)
 		self.target_qnet2=self.target_delayed_update(self.qnet, self.target_qnet2, update_delay)
 
-		# ipdb.set_trace()
+		# #ipdb.set_trace()
 	
 
-	def cem_optimal_action(self, state, state_image, image_next):
+	def cem_optimal_action(self, state, image_next):
 		''' evaluate action wrt Q(s,a) to select the optimal using CEM
 		return the only one largest, very gready
 		state_image: gripper_states+image_feature vector
 		'''
-		numpy_state = state_image.cpu().detach().numpy()
+		# numpy_state = state_image.cpu().detach().numpy()
+		states = torch.vstack([state]*self.num_samples)
+		images_next = torch.vstack([image_next.unsqueeze(0)]*self.num_samples)
 
 		''' the following line is critical:
 		every time use a new/initialized cem, and cem is only for deriving the argmax_a', 
@@ -232,29 +223,22 @@ class QT_Opt():
 		several different local optimum for a similar state using cem from different last state, which will cause
 		the optimal Q-value cannot be learned and even have a divergent loss for Q learning.
 		'''
-		self.cem.initialize()  # the critical line
+		self.cem.initialize(ini_mean_scale=0.0,ini_std_scale=6.0)  # the critical line
 		for itr in range(self.cem_update_itr):
-			q_values=[]
-			theta_list = self.cem.sample_multi(self.num_samples)
-			# ipdb.set_trace()
-			# print(theta_list)
-			for j in range(self.num_samples):
-				self.policy.update(theta_list[j])
-				one_action = torch.FloatTensor(self.policy.act(numpy_state)).to(self.device)
-				# print(one_action)
-				q_value,_ = self.target_qnet1(state.unsqueeze(0), one_action,image_next.unsqueeze(0))
-				# ipdb.set_trace()
-				q_values.append(q_value.detach().cpu().numpy()[0][0]) # 2 dim to scalar
-			idx=np.array(q_values).argsort()[-int(self.select_num):]  # select maximum q
-			max_idx=np.array(q_values).argsort()[-1]  # select maximal one q
-			selected_theta = theta_list[idx]
-			mean, _= self.cem.update(selected_theta)  # mean as the theta for argmax_a'
-			self.policy.update(mean)
-		max_theta=theta_list[max_idx]
-		self.policy.update(max_theta)
-		action = self.policy.act(numpy_state)[0] # [0]: 2 dim -> 1 dim
-		# print("Action: ",action.shape)
-		return action
+
+			actions = self.cem.sample_multi(self.num_samples)
+			# print("Actions sampled: ",actions)
+			#ipdb.set_trace()
+			q_values = self.target_qnet1(states, torch.FloatTensor(actions).to(self.device), images_next) # 2 dim to 1 dim
+			#ipdb.set_trace()
+			q_values = q_values[0].detach().cpu().numpy().reshape(-1)
+			max_idx=q_values.argsort()[-1]  # select maximal one q
+			idx = q_values.argsort()[-int(self.select_num):]  # select top maximum q
+			selected_actions = actions[idx]
+			_,_= self.cem.update(selected_actions)  # mean as the theta for argmax_a'
+		#ipdb.set_trace()
+		optimal_action = actions[max_idx]
+		return optimal_action
 
 	def target_soft_update(self, net, target_net, soft_tau):
 		''' Soft update the target net '''

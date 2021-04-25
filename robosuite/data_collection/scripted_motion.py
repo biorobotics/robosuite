@@ -8,6 +8,7 @@ import cv2
 from robosuite import load_controller_config
 import json
 import h5py
+import math
 '''
 Frames:
 
@@ -16,7 +17,16 @@ i -> iPhone frame
 d -> desired farme of the robot
 
 '''
+
+IMAGE_SIZE = (128,128)
 replay = []
+
+def calculate_velocity(obs):
+
+	v = np.zeros(3)
+	v[0:2] = (-(obs['robot0_eef_pos'][0:2]-obs['iPhone_pos'][0:2])*0.02)/0.001
+	# print(v)
+	return v
 def calculate_ee_ori(obs):
 
 		R_id = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
@@ -33,20 +43,22 @@ def relevant_obs(obs):
 	gripper_obs = np.zeros(2)
 	if obs['robot0_gripper_qpos'][0]<0.25:
 		gripper_obs[0] = 1	#Open/close gripper open:1, close:0
-	elif obs['robot0_gripper_qpos'][0]>0.4:
+	else:
 		gripper_obs[0] = 0	
 	gripper_obs[1] = obs['robot0_eef_pos'][2]	#gripper height
-
+	# print("gripper_obs: ",gripper_obs)
 	return gripper_obs
 	
 
 def relevant_action(action,obs,done):
 
-	gripper_action = np.zeros(7)
-	gripper_action[0:3] = action[0:3] - obs['robot0_eef_pos']	#gripper goal vector				
-	gripper_action[3:6] = action[3:6]							#gripper rotation
-	gripper_action[6] = 1-action[6]								#Open/close gripper open:1, close:0
-							#done condition
+	gripper_action = np.zeros(5)
+	dt = 0.001
+	gripper_action[0:3] = (action[0:3] - obs['robot0_eef_pos'])/dt	#gripper goal vector				
+	gripper_action[3] = math.atan2(action[4],action[3])*2							#gripper rotation
+	gripper_action[4] = 1-action[6] #Open/close gripper open:1, close:0
+	# print("gripper_action: ",gripper_action)
+	# ipdb.set_trace()
 	return gripper_action
 	pass
 
@@ -54,21 +66,30 @@ def relevant_reward(obs):
 
 	# print("reward: ",obs['iPhone_pos'][2])
 	#iPhone_z = 0.82
-	if obs['iPhone_pos'][2] > 0.82+0.05:
-		reward = 1
+	if obs['iPhone_pos'][2] > 0.82+0.02:
+		reward_grasp = 1
 	else:
-		reward = 0
+		reward_grasp = 0
 
-	return reward
+	reward_pos = np.exp(-np.linalg.norm(obs['iPhone_pos'][0:2]-obs['robot0_eef_pos'][0:2]))
+	l1 = 1
+	reward_total = reward_grasp+l1*reward_pos
+
+	# print("Reward_total: ",reward_total)
+	return reward_total
 	pass
 
 def preprocess_image(image):
 
-	image = image[::-1,0:125]
-	image = cv2.resize(image,(256,256))
-	# plt.imshow(image)
-	# plt.show()
-	return image
+
+	image_ = image[::-1,0:125].astype('uint8')
+	image_ = cv2.resize(image_,IMAGE_SIZE)
+	image_ = cv2.cvtColor(image_,cv2.COLOR_BGR2GRAY)
+	image_ = image_.reshape(IMAGE_SIZE[0],IMAGE_SIZE[1],1)
+	# cv2.imshow("obs image",image_)
+	# cv2.waitKey(0)
+	# cv2.destroyAllWindows() 
+	return image_
 
 def create_experience_replay(state,action,reward,next_state,image_current,image_next,done):
 
@@ -104,19 +125,23 @@ def goto_initial_position(env):
 	# print(obs)
 	action = np.zeros(7)
 	done = False
-	
-	for i in range(150):
+	theta = np.random.uniform(low=0, high=3.14)
+	while (np.linalg.norm(obs['robot0_eef_pos'][0:2]-obs['iPhone_pos'][0:2]))>0.025:
+		# print("termination condition: ",np.linalg.norm(obs['robot0_eef_pos'][0:2]-obs['iPhone_pos'][0:2]))
 		# print("current gripper angles: ",obs['robot0_gripper_qpos'])
-		print("Current status: Stage 1 on step {}".format(i))
+		# print("Current status: Stage 1 on step {}".format(i))
 		# action = np.random.randn(env.robots[0].dof) # sample random action
-		
+		v = calculate_velocity(obs)
+		# print("v is: ",v.shape)
+		action[0:3] = v*0.001 + obs['robot0_eef_pos'][0:3]
 		action_current = relevant_action(action,obs,done)
+		# print("action_current: ",action_current)
 		obs_current = relevant_obs(obs)
 
 		if not is_render:
 			image_current = preprocess_image(obs['image-state'])
 		else:
-			image_current = np.zeros([256,256])
+			image_current = np.zeros([IMAGE_SIZE[0],IMAGE_SIZE[1]])
 
 		if not done:
 			obs, reward, done, info = env.step(action)  # take action in the environment
@@ -126,12 +151,14 @@ def goto_initial_position(env):
 
 		if is_render:
 			env.render()  # render on display
-			image_next = np.zeros([256,256])
+			image_next= np.zeros([IMAGE_SIZE[0],IMAGE_SIZE[1]])
 		else:
 			image_next = preprocess_image(obs['image-state'])
 			
 		obs_next = relevant_obs(obs)
 		reward_current = relevant_reward(obs)
+
+			#introduced to remove initial jerky motion of the arm
 		replay.append(create_experience_replay(obs_current,action_current,reward_current,obs_next,image_current,image_next,done))
 
 		# ipdb.set_trace()
@@ -144,10 +171,12 @@ def goto_initial_position(env):
 
 		ax_bd = calculate_ee_ori(obs)
 
-		action[0:3] = object_pos
-		action[2] += 0.2	
+		# action[0:3] = object_pos
+		action[2] = object_pos[2] + 0.2	
 		# action[3:6] = np.array([-ax_r[0][1]*ax_r[1],-ax_r[0][2]*ax_r[1],ax_r[0][0]*ax_r[1]])
 		action[3:6] = np.array([ax_bd[0][0]*ax_bd[1],ax_bd[0][1]*ax_bd[1],ax_bd[0][2]*ax_bd[1]])
+		# action[3:6] = np.array([math.cos(theta/2)*3.14,math.sin(theta/2)*3.14,0])
+		# print("Action :",action[3:6])
 
 
 	return obs,ax_bd
@@ -158,16 +187,16 @@ def goto_down(env,obs,ax_bd):
 	i = 0
 	action = np.zeros(7)
 	done = False
-	while (np.abs(obs['robot0_eef_pos'][2]-obs['iPhone_pos'][2] > 0.007)) and i<1000:
+	while (np.abs(obs['robot0_eef_pos'][2]-obs['iPhone_pos'][2] > 0.007)) and i<2000:
 		if not is_render:
 			image_current = preprocess_image(obs['image-state'])
 		else:
-			image_current = np.zeros([256,256])
+			image_current = np.zeros([IMAGE_SIZE[0],IMAGE_SIZE[1]])
 
 		# ax_bd = calculate_ee_ori(obs)
 
 		# ipdb.set_trace()
-		print("Current status: Stage 2 on step {} and distance is {}".format(i,obs['robot0_eef_pos'][2]-obs['iPhone_pos'][2]))
+		# print("Current status: Stage 2 on step {} and distance is {}".format(i,obs['robot0_eef_pos'][2]-obs['iPhone_pos'][2]))
 		action[0:3] = obs['robot0_eef_pos']
 		action[2] -= 0.003
 		action[3:6] = np.array([ax_bd[0][0]*ax_bd[1],ax_bd[0][1]*ax_bd[1],ax_bd[0][2]*ax_bd[1]])
@@ -179,7 +208,7 @@ def goto_down(env,obs,ax_bd):
 
 		if is_render:
 			env.render()  # render on display
-			image_next = np.zeros([256,256])
+			image_next = np.zeros([IMAGE_SIZE[0],IMAGE_SIZE[1]])
 		else:
 			image_next = preprocess_image(obs['image-state'])
 
@@ -205,10 +234,10 @@ def goto_close_gripper(env,obs,ax_bd):
 		if not is_render:
 			image_current = preprocess_image(obs['image-state'])
 		else:
-			image_current = np.zeros([256,256])
+			image_current = np.zeros([IMAGE_SIZE[0],IMAGE_SIZE[1]])
 
 		# ipdb.set_trace()
-		print("Current status: Stage 3 on step {} ".format(i))
+		# print("Current status: Stage 3 on step {} ".format(i))
 		action[0:3] = obs['robot0_eef_pos']
 		# ax_bd = calculate_ee_ori(obs)
 		action[3:6] = np.array([ax_bd[0][0]*ax_bd[1],ax_bd[0][1]*ax_bd[1],ax_bd[0][2]*ax_bd[1]])
@@ -220,7 +249,7 @@ def goto_close_gripper(env,obs,ax_bd):
 
 		if is_render:
 			env.render()  # render on display
-			image_next = np.zeros([256,256])
+			image_next = np.zeros([IMAGE_SIZE[0],IMAGE_SIZE[1]])
 		else:
 			image_next = preprocess_image(obs['image-state'])
 
@@ -238,21 +267,22 @@ def goto_up(env,obs,ax_bd):
 	global replay
 	i = 0
 	action = np.zeros(7)
-	action[3] = 1
+	# action[3] = 1
 	done = False
+	action[6] = 1
 	while (np.abs(obs['robot0_eef_pos'][2]-0.82 < 0.1)) and i<1000:
 
 		if not is_render:
 			image_current = preprocess_image(obs['image-state'])
 		else:
-			image_current = np.zeros([256,256])
+			image_current = np.zeros([IMAGE_SIZE[0],IMAGE_SIZE[1]])
 		# print("current gripper angles: ",obs['robot0_gripper_qpos'])
 		# ipdb.set_trace()
-		print("Current status: Stage 4 on step {} and distance is {}".format(i,obs['robot0_eef_pos'][2]-obs['iPhone_pos'][2]))
+		# print("Current status: Stage 4 on step {} and distance is {}".format(i,obs['robot0_eef_pos'][2]-obs['iPhone_pos'][2]))
 		action[0:3] = obs['robot0_eef_pos']
 		# ax_bd = calculate_ee_ori(obs)
 		action[3:6] = np.array([ax_bd[0][0]*ax_bd[1],ax_bd[0][1]*ax_bd[1],ax_bd[0][2]*ax_bd[1]])
-		action[2] += 0.003
+		action[2] += 0.001
 		action_current = relevant_action(action,obs,done)
 		obs_current = relevant_obs(obs)
 		if not done:
@@ -260,7 +290,7 @@ def goto_up(env,obs,ax_bd):
 		
 		if is_render:
 			env.render()  # render on display
-			image_next = np.zeros([256,256])
+			image_next = np.zeros([IMAGE_SIZE[0],IMAGE_SIZE[1]])
 		else:
 			image_next = preprocess_image(obs['image-state'])
 
@@ -288,7 +318,7 @@ if __name__ == "__main__":
 	print("controller_config: ",controller_config)
 
 
-
+	collect_data = not is_render
 	# create environment instance
 	env = suite.make(
 		env_name="PickPlaceiPhone", # try with other tasks like "Stack" and "Door"
@@ -303,19 +333,23 @@ if __name__ == "__main__":
 
 	import h5py
 
-	for episode_period in range(5):
+	for episode_period in range(50):
 		obs,ax_bd = goto_initial_position(env)
+		# print("Obs: ",calculate_ee_ori(obs))
 		obs = goto_down(env,obs,ax_bd)
+		# print("Obs: ",calculate_ee_ori(obs))
 		obs = goto_close_gripper(env,obs,ax_bd)
+		# print("Obs: ",calculate_ee_ori(obs))
 		obs = goto_up(env,obs,ax_bd)
+		# print("Obs: ",calculate_ee_ori(obs))
+		
 		# ipdb.set_trace()
 		# print("Len of replay: ",(replay))
 		replay = np.array(replay)
 		# ipdb.set_trace()
 		# print(json_string)
-
-		if not is_render:
-		#obs_current,action_current,reward_current,obs_next,image_current,image_next
+		if collect_data:
+			#obs_current,action_current,reward_current,obs_next,image_current,image_next
 			with h5py.File('./data/experience_replay_{}.h5'.format(episode_period+1), "w") as f:
 
 				state_current_ = np.array(list(replay[:, 0]), dtype=np.float)
@@ -341,6 +375,7 @@ if __name__ == "__main__":
 
 			
 		replay = []
+		print("Collected replay for episode {}".format(episode_period+1))
 
 		# ipdb.set_trace()
 	

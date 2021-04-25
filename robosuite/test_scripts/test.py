@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from robosuite import load_controller_config
 
 import transforms3d as t3d
+import ipdb
 
 is_render = True
 controller_names = ["OSC_POSE","OSC_POSITION"]
@@ -58,6 +59,7 @@ for i in range(1000):
 		else:
 			plt.imshow(obs['image-state'])
 			print("action: ",action)
+		ipdb.set_trace()
 
 
 
